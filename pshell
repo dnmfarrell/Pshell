@@ -1,0 +1,96 @@
+#!/usr/bin/env perl
+{
+package main;
+use v5.10;
+use strict;
+use utf8;
+binmode STDOUT, ':utf8';
+
+$| = 1;
+
+my @command_history = ();
+
+my %builtin = (
+  cd   => sub { chdir $_[0] || warn "Couldn't chdir to $_[0]: $!\n" },
+  exit => sub { exit $_[0] || 0 },
+);
+
+while (1) {
+  print "🐫 ";
+  my $command = <>;
+  chomp $command;
+  next unless $command;
+  run($command);
+}
+
+sub run {
+  my $raw_text = shift;
+  push @command_history, $raw_text;
+  my @commands = @{parse($raw_text)};
+  for (0..$#commands) {
+    my %command = $commands[$_];
+    if ($builtin{$command{program}}) {
+      $builtin{$command{program}}->(@{$command{args}});
+      return;
+    }
+    my $pid = fork;
+    if (! defined $pid) { print STDERR "Couldn't fork: $!\n" }
+    elsif ($pid == 0) {
+      if ($command{writer}) {
+        STDOUT = $write;
+        $command{reader} = $read;
+      }
+      elsif ($command{reader}) {
+        STDIN = $commands[$_ -1]{reader};
+      }
+      # Handle redirections
+      else {
+        if ($command{stdin}) {
+          open STDIN, "<", $command{stdin}
+            or die "Couldn't redirect stdin from $command{stdin}: $!\n";
+        }
+        if ($command{stdout}) {
+          open STDOUT, $command{append}, $command{stdout}
+            or die "Couldn't redirect stdout to $command{stdout}: $!\n";
+        }
+        # we exit here if this succeeds
+        exec $command{program}, @{$command{args}};
+
+        # if exec failed, try Perl
+        Faraday->execute($raw_text);
+        warn $@ if $@;
+        exit $@ ? 1 : 0;
+      }
+    }
+  } wait;
+}
+
+sub parse {
+  my @words = grep $_ =~ /\S/, split /( \s+ | < | >> | > )/x, shift;
+  my @commands = ();
+  while (@words) {
+    local $_ = shift @words;
+    if (@commands == 0) {
+      push @commands, [program => shift @words, args => []];
+    }
+    elsif ($_ eq '|') {
+      pipe my $read, my $write;
+      $commands[-1]{writer} = $write;
+      push @commands, [program => shift @words, args => [], reader => $read];
+    }
+    elsif ($_ eq '<') {
+      $commands[-1]{stdin} = shift @words;
+    }
+    elsif ($_ eq '>' || $_ eq '>>') {
+      $commands[-1]{stdout} = shift @words;
+      $commands[-1]{append} = $_;
+    }
+    else {
+      push @{$commands[-1]{args}}, $_;
+    }
+  }
+  return \@commands;
+}
+}
+# prevent overwriting of variables in main package
+{ package Faraday;sub execute { eval "$_[1]" } }
