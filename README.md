@@ -17,3 +17,4 @@ See LICENSE
 ## See also
 
 [psh](https://github.com/gnp/psh) is another Perl shell
+[Creating a pipe](https://www.gnu.org/software/libc/manual//html_node/Creating-a-Pipe.html) from the GNU C documentation
