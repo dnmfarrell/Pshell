@@ -6,6 +6,9 @@ use strict;
 use utf8;
 binmode STDOUT, ':utf8';
 
+use Data::Dumper 'Dumper';
+
+# Don't buffer STDOUT
 $| = 1;
 
 my @command_history = ();
@@ -28,7 +31,8 @@ sub run {
   push @command_history, $raw_text;
   my @commands = @{parse($raw_text)};
   for (0..$#commands) {
-    my %command = $commands[$_];
+    my %command = %{$commands[$_]};
+    print Dumper(\%command);
     if ($builtin{$command{program}}) {
       $builtin{$command{program}}->(@{$command{args}});
       return;
@@ -36,12 +40,12 @@ sub run {
     my $pid = fork;
     if (! defined $pid) { print STDERR "Couldn't fork: $!\n" }
     elsif ($pid == 0) {
+      # Handle pipes
       if ($command{writer}) {
-        STDOUT = $write;
-        $command{reader} = $read;
+        open STDOUT, '&>', $command{writer};
       }
       elsif ($command{reader}) {
-        STDIN = $commands[$_ -1]{reader};
+        open STDIN, '<&', $command{reader};
       }
       # Handle redirections
       else {
@@ -57,36 +61,38 @@ sub run {
         exec $command{program}, @{$command{args}};
 
         # if exec failed, try Perl
-        Faraday->execute($raw_text);
+        my $rv = Faraday->execute($raw_text);
+        print Dumper($rv);
         warn $@ if $@;
         exit $@ ? 1 : 0;
       }
     }
   } wait;
 }
-
 sub parse {
   my @words = grep $_ =~ /\S/, split /( \s+ | < | >> | > )/x, shift;
   my @commands = ();
   while (@words) {
     local $_ = shift @words;
+    # first word is a command
     if (@commands == 0) {
-      push @commands, [program => shift @words, args => []];
+      push @commands, {program => $_, args => []};
     }
     elsif ($_ eq '|') {
       pipe my $read, my $write;
+      # set previous command STDOUT to pipe
       $commands[-1]{writer} = $write;
-      push @commands, [program => shift @words, args => [], reader => $read];
+      push @commands, {program => shift(@words), args => [], reader => $read};
     }
     elsif ($_ eq '<') {
-      $commands[-1]{stdin} = shift @words;
+      $commands[0]{stdin} = shift @words;
     }
     elsif ($_ eq '>' || $_ eq '>>') {
-      $commands[-1]{stdout} = shift @words;
-      $commands[-1]{append} = $_;
+      $commands[0]{stdout} = shift @words;
+      $commands[0]{append} = $_;
     }
     else {
-      push @{$commands[-1]{args}}, $_;
+      push @{$commands[0]{args}}, $_;
     }
   }
   return \@commands;
