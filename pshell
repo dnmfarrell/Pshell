@@ -1,17 +1,16 @@
 #!/usr/bin/env perl
-{
 package main;
 use v5.10;
+use autodie;
 use strict;
 use utf8;
 binmode STDOUT, ':utf8';
-
 use Data::Dumper 'Dumper';
+use POSIX; 'WNOHANG';
+use Time::HiRes 'sleep';
 
 # Don't buffer STDOUT
 $| = 1;
-
-my @command_history = ();
 
 my %builtin = (
   cd   => sub { chdir $_[0] || warn "Couldn't chdir to $_[0]: $!\n" },
@@ -28,11 +27,9 @@ while (1) {
 
 sub run {
   my $raw_text = shift;
-  push @command_history, $raw_text;
-  my @commands = @{parse($raw_text)};
+  my @commands = reverse @{parse($raw_text)};
   for (0..$#commands) {
     my %command = %{$commands[$_]};
-    print Dumper(\%command);
     if ($builtin{$command{program}}) {
       $builtin{$command{program}}->(@{$command{args}});
       return;
@@ -42,32 +39,26 @@ sub run {
     elsif ($pid == 0) {
       # Handle pipes
       if ($command{writer}) {
-        open STDOUT, '&>', $command{writer};
+        open STDOUT, '>&', $command{writer};
+        $| = 1;
       }
       elsif ($command{reader}) {
         open STDIN, '<&', $command{reader};
       }
       # Handle redirections
-      else {
-        if ($command{stdin}) {
-          open STDIN, "<", $command{stdin}
-            or die "Couldn't redirect stdin from $command{stdin}: $!\n";
-        }
-        if ($command{stdout}) {
-          open STDOUT, $command{append}, $command{stdout}
-            or die "Couldn't redirect stdout to $command{stdout}: $!\n";
-        }
-        # we exit here if this succeeds
-        exec $command{program}, @{$command{args}};
-
-        # if exec failed, try Perl
-        my $rv = Faraday->execute($raw_text);
-        print Dumper($rv);
-        warn $@ if $@;
-        exit $@ ? 1 : 0;
+      if ($command{stdin}) {
+        open STDIN, "<", $command{stdin};
       }
+      if ($command{stdout}) {
+        open STDOUT, $command{append}, $command{stdout};
+      }
+      # we exit here if this succeeds
+      exec $command{program}, @{$command{args}};
     }
-  } wait;
+  }
+  do {
+    sleep(0.25);
+  } while (waitpid(-1, WNOHANG) > 0) # until all children exit
 }
 sub parse {
   my @words = grep $_ =~ /\S/, split /( \s+ | < | >> | > )/x, shift;
@@ -80,23 +71,19 @@ sub parse {
     }
     elsif ($_ eq '|') {
       pipe my $read, my $write;
-      # set previous command STDOUT to pipe
       $commands[-1]{writer} = $write;
       push @commands, {program => shift(@words), args => [], reader => $read};
     }
     elsif ($_ eq '<') {
-      $commands[0]{stdin} = shift @words;
+      $commands[-1]{stdin} = shift @words;
     }
     elsif ($_ eq '>' || $_ eq '>>') {
-      $commands[0]{stdout} = shift @words;
-      $commands[0]{append} = $_;
+      $commands[-1]{stdout} = shift @words;
+      $commands[-1]{append} = $_;
     }
     else {
-      push @{$commands[0]{args}}, $_;
+      push @{$commands[-1]{args}}, $_;
     }
   }
   return \@commands;
 }
-}
-# prevent overwriting of variables in main package
-{ package Faraday;sub execute { eval "$_[1]" } }
